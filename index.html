@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Qari Pitch Trainer</title>
+<style>
+:root{--bg:#0f1a1c;--panel:#172629;--ink:#ece6d4;--dim:#8fa3a0;--gold:#ecb54a;--me:#4fe0cf;--roww:#142326;--rowb:#0d1719;--line:#2a4044;--rec:#ff6b5e;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1a1c}}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]){--bg:#eef3f0;--panel:#dfe8e4;--ink:#13211f;--dim:#5a6f6b;--gold:#b87708;--me:#0a8c80;--roww:#f6faf8;--rowb:#dbe5e1;--line:#bfcfca;--rec:#d63a2c}}
+:root[data-theme="dark"]{--bg:#0f1a1c}
+*{box-sizing:border-box}
+html{height:100%;scroll-padding-top:env(safe-area-inset-top,0px)}
+body{height:100%;margin:0;background:var(--bg);color:var(--ink);font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+#app{height:100%;display:flex;flex-direction:column;gap:8px;padding:10px;max-width:900px;margin:0 auto}
+header{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+h1{font:600 18px/1.2 Georgia,"Times New Roman",serif;margin:0;flex:1 1 auto}
+button,.btn,select{min-height:44px;padding:0 14px;border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font:inherit;cursor:pointer;display:inline-flex;align-items:center;justify-content:center}
+button:focus-visible,.btn:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+button[aria-pressed="true"]{background:var(--gold);color:#17120a;border-color:var(--gold)}
+#rec[aria-pressed="true"]{background:var(--rec);border-color:var(--rec);color:#fff}
+#fn{color:var(--dim);font-size:13px;flex:1 0 100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#stage{position:relative;flex:1 1 auto;min-height:200px;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;display:block}
+#msg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px;color:var(--dim);pointer-events:none}
+#read{display:flex;gap:14px;font-size:14px;flex-wrap:wrap;min-height:22px}
+#read b{color:var(--gold)} #read i{color:var(--me);font-style:normal;font-weight:700}
+#seek{width:100%;accent-color:var(--gold)}
+#time{display:flex;justify-content:space-between;font-size:15px;font-variant-numeric:tabular-nums;margin-bottom:-4px}
+#tc{color:var(--gold);font-weight:700} #td{color:var(--dim)}
+#ctl{display:flex;gap:8px;flex-wrap:wrap}
+#ctl>*{flex:1 1 auto}
+label.chk{display:inline-flex;align-items:center;gap:6px;color:var(--dim);font-size:13px}
+</style>
+</head>
+<body>
+<main id="app">
+<header>
+  <h1>Qari pitch trainer</h1>
+  <label class="btn" for="f" tabindex="0">Load recitation</label>
+  <input id="f" type="file" accept="audio/*" hidden>
+  <span id="fn">No file loaded</span>
+</header>
+<div id="stage"><canvas id="cv"></canvas><div id="msg">Load a recitation file to see its notes.</div></div>
+<div id="read"><span id="rq"></span><span id="ru"></span><span id="rd"></span></div>
+<div id="time"><span id="tc">0:00</span><span id="td">0:00</span></div>
+<input id="seek" type="range" min="0" max="1000" value="0" aria-label="Position">
+<div id="ctl">
+  <button id="play">Play</button>
+  <button id="restart">Restart</button>
+  <button id="mute" aria-pressed="false">Mute qari</button>
+  <button id="rec" aria-pressed="false">Record me</button>
+  <button id="clear">Clear my take</button>
+</div>
+<div id="ctl">
+  <select id="spd" aria-label="Speed"><option value="0.5">0.5x</option><option value="0.75">0.75x</option><option value="1" selected>1x</option></select>
+  <select id="zoom" aria-label="Time window"><option value="4">4 s view</option><option value="8" selected>8 s view</option><option value="16">16 s view</option></select>
+  <label class="chk"><input id="oct" type="checkbox" checked> Match my octave</label>
+</div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const NN=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const nm=m=>{m=Math.round(m);return NN[((m%12)+12)%12]+(Math.floor(m/12)-1)};
+const BLK=[1,3,6,8,10], DT=0.025;
+const fmt=s=>{s=Math.max(0,Math.floor(s||0));return Math.floor(s/60)+':'+String(s%60).padStart(2,'0')};
+const au=new Audio(); au.preload='auto';
+let qp=null, up=null, lo=48, hi=72, span=8, rec=false, stream=null, micCtx=null, an=null, msrc=null, mbuf=null, shift=0, liveU=NaN, dragging=false;
+
+/* ---------- pitch detection (YIN) ---------- */
+const D=new Float32Array(1024);
+function yin(x,off,sr){
+  const W=Math.round(sr*.035), tmax=Math.ceil(sr/70), tmin=Math.max(2,Math.floor(sr/900));
+  let e=0; for(let j=0;j<W;j++){const v=x[off+j];e+=v*v}
+  if(e/W<4e-6) return NaN;
+  let run=0; D[0]=1;
+  for(let t=1;t<=tmax;t++){let s=0;for(let j=0;j<W;j++){const d=x[off+j]-x[off+j+t];s+=d*d}run+=s;D[t]=run?s*t/run:1}
+  let t=tmin;
+  while(t<tmax){
+    if(D[t]<.15){
+      while(t+1<tmax&&D[t+1]<D[t])t++;
+      const a=D[t-1],b=D[t],c=D[t+1],den=a+c-2*b,sh=den?(a-c)/(2*den):0;
+      return 69+12*Math.log2(sr/(t+sh)/440);
+    }
+    t++;
+  }
+  return NaN;
+}
+const tick=()=>new Promise(r=>setTimeout(r,0));
+
+async function analyse(buf){
+  const ch=buf.getChannelData(0), f=Math.max(1,Math.round(buf.sampleRate/11025)), sr=buf.sampleRate/f, n=Math.floor(ch.length/f);
+  const x=new Float32Array(n);
+  for(let i=0;i<n;i++){let s=0;for(let k=0;k<f;k++)s+=ch[i*f+k];x[i]=s/f}
+  const total=Math.ceil(buf.duration/DT)+1, raw=new Float32Array(total).fill(NaN);
+  const need=Math.round(sr*.035)+Math.ceil(sr/70)+2;
+  for(let i=0;i<total;i++){
+    const off=Math.round(i*DT*sr);
+    if(off+need<n) raw[i]=yin(x,off,sr);
+    if(i%250===0){$('msg').textContent='Reading notes… '+Math.round(i/total*100)+'%';await tick()}
+  }
+  const out=new Float32Array(total).fill(NaN);
+  for(let i=0;i<total;i++){
+    if(raw[i]!==raw[i])continue;
+    const w=[];for(let k=-2;k<=2;k++){const v=raw[i+k];if(v===v)w.push(v)}
+    w.sort((a,b)=>a-b); out[i]=w[w.length>>1];
+  }
+  return out;
+}
+
+/* ---------- loading ---------- */
+$('f').onchange=async e=>{
+  const file=e.target.files[0]; if(!file)return;
+  if(rec)stopRec(); au.pause(); qp=null;
+  $('fn').textContent=file.name;$('tc').textContent='0:00';$('td').textContent='0:00'; $('msg').style.display='flex'; $('msg').textContent='Decoding audio…';
+  au.src=URL.createObjectURL(file);
+  try{
+    const AC=window.AudioContext||window.webkitAudioContext, ac=new AC();
+    const buf=await ac.decodeAudioData(await file.arrayBuffer()); ac.close();
+    qp=await analyse(buf);
+    const v=Array.from(qp).filter(a=>a===a).sort((a,b)=>a-b);
+    if(v.length<10){$('msg').textContent='No clear voice found in this file.';return}
+    lo=Math.floor(v[Math.floor(v.length*.02)])-2; hi=Math.ceil(v[Math.floor(v.length*.98)])+2;
+    while(hi-lo<14){lo--;hi++}
+    up=new Float32Array(qp.length).fill(NaN); au.currentTime=0; $('msg').style.display='none';
+  }catch(err){$('msg').textContent='Could not read this file. Try an MP3, M4A or WAV.'}
+};
+
+/* ---------- transport ---------- */
+const setPlay=()=>$('play').textContent=au.paused?'Play':'Pause';
+au.onplay=au.onpause=au.onended=setPlay;
+$('play').onclick=()=>{if(qp)au.paused?au.play():au.pause()};
+$('restart').onclick=()=>{au.currentTime=0};
+$('mute').onclick=e=>{au.muted=!au.muted;e.currentTarget.setAttribute('aria-pressed',au.muted);e.currentTarget.textContent=au.muted?'Qari muted':'Mute qari'};
+$('spd').onchange=e=>{au.playbackRate=+e.target.value};
+$('zoom').onchange=e=>{span=+e.target.value};
+$('clear').onclick=()=>{if(up)up.fill(NaN)};
+$('seek').oninput=e=>{if(au.duration)au.currentTime=e.target.value/1000*au.duration};
+
+/* ---------- recording ---------- */
+async function startRec(){
+  if(!qp){$('msg').style.display='flex';$('msg').textContent='Load a recitation first.';return}
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:false,autoGainControl:false}});
+  }catch(err){alert('Microphone is blocked. Allow microphone access for this page, or open the link in your browser.');return}
+  micCtx=micCtx||new (window.AudioContext||window.webkitAudioContext)(); await micCtx.resume();
+  msrc=micCtx.createMediaStreamSource(stream); an=micCtx.createAnalyser(); an.fftSize=4096; msrc.connect(an); mbuf=new Float32Array(4096);
+  rec=true; shift=0; $('rec').setAttribute('aria-pressed',true); $('rec').textContent='Stop recording'; au.play();
+}
+function stopRec(){
+  rec=false; liveU=NaN; try{msrc.disconnect();stream.getTracks().forEach(t=>t.stop())}catch(e){}
+  $('rec').setAttribute('aria-pressed',false); $('rec').textContent='Record me';
+}
+$('rec').onclick=()=>rec?stopRec():startRec();
+
+function sample(){
+  an.getFloatTimeDomainData(mbuf);
+  const f=Math.max(1,Math.round(micCtx.sampleRate/11025)), n=Math.floor(mbuf.length/f), x=new Float32Array(n);
+  for(let i=0;i<n;i++){let s=0;for(let k=0;k<f;k++)s+=mbuf[i*f+k];x[i]=s/f}
+  let u=yin(x,0,micCtx.sampleRate/f);
+  const idx=Math.floor(au.currentTime/DT), q=qp[idx];
+  if(u===u&&$('oct').checked){ if(q===q)shift=12*Math.round((q-u)/12); u+=shift }
+  liveU=u;
+  if(!au.paused&&idx<up.length) up[idx]=u;
+}
+
+/* ---------- drawing ---------- */
+const cv=$('cv'), g=cv.getContext('2d'); let W=0,H=0,dpr=1,C={};
+function fit(){
+  const r=cv.parentElement.getBoundingClientRect(); dpr=window.devicePixelRatio||1; W=r.width;H=r.height;
+  cv.width=Math.round(W*dpr);cv.height=Math.round(H*dpr);
+  const s=getComputedStyle(document.documentElement), v=k=>s.getPropertyValue(k).trim();
+  C={gold:v('--gold'),me:v('--me'),roww:v('--roww'),rowb:v('--rowb'),line:v('--line'),ink:v('--ink'),dim:v('--dim')};
+}
+new ResizeObserver(fit).observe(cv.parentElement);
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change',fit);
+
+function track(arr,i0,i1,X,Y,col,lw,alpha){
+  g.globalAlpha=alpha;g.fillStyle=col;
+  let n=null,s=0,e=0,gap=0;
+  const flush=()=>{
+    if(n===null)return;
+    const x=X(s*DT),w=Math.max(2,X((e+1)*DT)-x),y=Y(n)-lw/2;
+    g.beginPath();
+    if(g.roundRect)g.roundRect(x,y,w,lw,Math.min(3,lw/3));else g.rect(x,y,w,lw);
+    g.fill();n=null;
+  };
+  for(let i=i0;i<=i1;i++){
+    const v=arr[i];
+    if(v!==v){if(n!==null&&++gap>2)flush();continue}
+    gap=0;
+    if(n!==null&&Math.abs(v-n)<.65)e=i;
+    else{flush();n=Math.round(v);s=i;e=i}
+  }
+  flush();g.globalAlpha=1;
+}
+
+function draw(){
+  requestAnimationFrame(draw);
+  if(rec&&an)try{sample()}catch(e){}
+  g.setTransform(dpr,0,0,dpr,0,0); g.clearRect(0,0,W,H);
+  const KW=46,pw=W-KW,rows=hi-lo+1,rh=H/rows,Y=m=>H-(m-lo+.5)*rh;
+  g.font='11px system-ui,sans-serif';g.textBaseline='middle';
+  for(let m=lo;m<=hi;m++){
+    const y=H-(m-lo+1)*rh,b=BLK.includes(((m%12)+12)%12);
+    g.fillStyle=b?C.rowb:C.roww;g.fillRect(KW,y,pw,rh);
+    g.fillStyle=b?'#1b1b1b':'#ece7da';g.fillRect(0,y+.5,b?KW*.62:KW-1,rh-1);
+    if(m%12===0){g.fillStyle=C.line;g.fillRect(KW,y+rh-.5,pw,1)}
+    if(!b&&(rh>=13||m%12===0)){g.fillStyle='#333';g.fillText(nm(m),KW-26,y+rh/2)}
+  }
+  if(!qp){return}
+  const t=au.currentTime,pps=pw/span,hx=KW+pw*.25,X=s=>hx+(s-t)*pps;
+  const i0=Math.max(0,Math.floor((t-.25*span)/DT)),i1=Math.min(qp.length-1,Math.ceil((t+.75*span)/DT));
+  g.save();g.beginPath();g.rect(KW,0,pw,H);g.clip();
+  track(qp,i0,i1,X,Y,C.gold,rh*.8,1);
+  track(up,i0,i1,X,Y,C.me,rh*.5,.6);
+  g.fillStyle=C.ink;g.globalAlpha=.7;g.fillRect(hx-.5,0,1.5,H);g.globalAlpha=1;g.restore();
+  const idx=Math.floor(t/DT),q=qp[idx];
+  $('rq').innerHTML='Qari <b>'+(q===q?nm(q):'–')+'</b>';
+  $('ru').innerHTML=rec?'You <i>'+(liveU===liveU?nm(liveU):'–')+'</i>':'';
+  $('rd').textContent=(rec&&q===q&&liveU===liveU)?((liveU-q>=0?'+':'')+Math.round((liveU-q)*100)+' cents'):'';
+  $('tc').textContent=fmt(t);$('td').textContent=fmt(au.duration);
+  if(!dragging&&au.duration)$('seek').value=t/au.duration*1000;
+}
+draw();
+
+/* drag the roll to scrub */
+let dx0=0,dt0=0;
+cv.onpointerdown=e=>{if(!qp)return;dragging=true;dx0=e.clientX;dt0=au.currentTime;cv.setPointerCapture(e.pointerId)};
+cv.onpointermove=e=>{if(!dragging)return;const pps=(W-46)/span;au.currentTime=Math.max(0,Math.min(au.duration||0,dt0-(e.clientX-dx0)/pps))};
+cv.onpointerup=cv.onpointercancel=()=>{dragging=false};
+</script>
+</body>
+</html>
