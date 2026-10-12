@@ -56,7 +56,7 @@ label.chk{display:inline-flex;align-items:center;gap:6px;color:var(--dim);font-s
 <div id="ctl">
   <select id="spd" aria-label="Speed"><option value="0.5">0.5x</option><option value="0.75">0.75x</option><option value="1" selected>1x</option></select>
   <select id="zoom" aria-label="Time window"><option value="4">4 s view</option><option value="8" selected>8 s view</option><option value="16">16 s view</option></select>
-  <label class="chk"><input id="oct" type="checkbox" checked> Match my octave</label>
+  <select id="oct" aria-label="Match my octave"><option value="3">My voice: +3 octaves</option><option value="2">My voice: +2 octaves</option><option value="1">My voice: +1 octave</option><option value="0" selected>My voice: as sung</option><option value="-1">My voice: -1 octave</option><option value="-2">My voice: -2 octaves</option><option value="-3">My voice: -3 octaves</option></select>
 </div>
 </main>
 <script>
@@ -160,7 +160,6 @@ function sample(){
   for(let i=0;i<n;i++){let s=0;for(let k=0;k<f;k++)s+=mbuf[i*f+k];x[i]=s/f}
   let u=yin(x,0,micCtx.sampleRate/f);
   const idx=Math.floor(au.currentTime/DT), q=qp[idx];
-  if(u===u&&$('oct').checked){ if(q===q)shift=12*Math.round((q-u)/12); u+=shift }
   liveU=u;
   if(!au.paused&&idx<up.length) up[idx]=u;
 }
@@ -176,7 +175,7 @@ function fit(){
 new ResizeObserver(fit).observe(cv.parentElement);
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change',fit);
 
-function track(arr,i0,i1,X,Y,col,lw,alpha){
+function track(arr,i0,i1,X,Y,col,lw,alpha,off=0){
   g.globalAlpha=alpha;g.fillStyle=col;
   let n=null,s=0,e=0,gap=0;
   const flush=()=>{
@@ -187,7 +186,7 @@ function track(arr,i0,i1,X,Y,col,lw,alpha){
     g.fill();n=null;
   };
   for(let i=i0;i<=i1;i++){
-    const v=arr[i];
+    const v=arr[i]+off;
     if(v!==v){if(n!==null&&++gap>2)flush();continue}
     gap=0;
     if(n!==null&&Math.abs(v-n)<.65)e=i;
@@ -214,12 +213,13 @@ function draw(){
   const i0=Math.max(0,Math.floor((t-.25*span)/DT)),i1=Math.min(qp.length-1,Math.ceil((t+.75*span)/DT));
   g.save();g.beginPath();g.rect(KW,0,pw,H);g.clip();
   track(qp,i0,i1,X,Y,C.gold,rh*.8,1);
-  track(up,i0,i1,X,Y,C.me,rh*.5,.6);
+  track(up,i0,i1,X,Y,C.me,rh*.5,.6,12*(+$('oct').value));
   g.fillStyle=C.ink;g.globalAlpha=.7;g.fillRect(hx-.5,0,1.5,H);g.globalAlpha=1;g.restore();
   const idx=Math.floor(t/DT),q=qp[idx];
   $('rq').innerHTML='Qari <b>'+(q===q?nm(q):'–')+'</b>';
-  $('ru').innerHTML=rec?'You <i>'+(liveU===liveU?nm(liveU):'–')+'</i>':'';
-  $('rd').textContent=(rec&&q===q&&liveU===liveU)?((liveU-q>=0?'+':'')+Math.round((liveU-q)*100)+' cents'):'';
+  const lu=liveU+12*(+$('oct').value);
+  $('ru').innerHTML=rec?'You <i>'+(lu===lu?nm(lu):'–')+'</i>':'';
+  $('rd').textContent=(rec&&q===q&&lu===lu)?((lu-q>=0?'+':'')+Math.round((lu-q)*100)+' cents'):'';
   $('tc').textContent=fmt(t);$('td').textContent=fmt(au.duration);
   if(!dragging&&au.duration)$('seek').value=t/au.duration*1000;
 }
